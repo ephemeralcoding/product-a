@@ -1,5 +1,0 @@
-- name: Copy tar artifact to target
-  copy:
-    src: "{{ artifact_dir }}/noble.tar.gz"
-    dest: "/tmp/noble.tar.gz"
-    mode: "0644"
