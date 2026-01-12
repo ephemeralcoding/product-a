@@ -10,10 +10,12 @@
 5. Konvertera till en CI/CD pipeline
 6. Kör tester i en vagrant box
 7. Generera en SBOM
-8. fixa gitignore på roles i produkt repot
-9. venven ska inte skickas med bundle
+8. fixa gitignore på roles och artifacts i produkt repot
+9. venven ska inte skickas med bundle (X)
 10. VARS NOT SET IN DEFAULT för rollerna
-
+11. HASHSUM
+12. Signera
+13. Disable default repos
 
 
 # Notes

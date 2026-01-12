@@ -12,8 +12,8 @@ WHEELS="${ROOT}/wheels"
 VENV="${ROOT}/.venv"
 
 
-#Output shall be converted to a pipeline later on
-rm -rf "${DIST}"
+#doesnt matter when converted to a pipeline later on
+rm -rf "${DIST}" "${VENDOR}/roles" "${VENDOR}/artifacts"
 mkdir -p "${DIST}" "${VENDOR}/roles" "${VENDOR}/artifacts"
 
 echo "==> Downloading Python wheels into vendor/wheels"
@@ -41,12 +41,13 @@ mkdir -p "${WORKDIR}"
 rsync -a --delete \
   --exclude '.git/' \
   --exclude 'dist/' \
-  --exclude 'stuff/' \
+  --exclude 'ansible/' \
+  --exclude '.venv/' \
   "${ROOT}/" "${WORKDIR}/"
 
 echo "==> Copying vendor/ (roles + artifacts) into bundle"
-mkdir -p "${WORKDIR}/stuff"
-rsync -a "${VENDOR}/" "${WORKDIR}/stuff/"
+mkdir -p "${WORKDIR}/ansible"
+rsync -a "${VENDOR}/" "${WORKDIR}/ansible/"
 
 echo "==> Creating tarball"
 tar -C "${DIST}" -czf "${DIST}/${BUNDLE_NAME}.tar.gz" "${BUNDLE_NAME}"

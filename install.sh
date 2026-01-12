@@ -24,6 +24,9 @@ if [[ ! -f "${PLAYBOOK}" ]]; then
   exit 1
 fi
 
+echo "==> DISABLE DEFAULT REPOS"
+dnf -y --disablerepo="*"
+
 # Ensure we use the bundle's ansible.cfg (roles_path should point to ./vendor/roles)
 export ANSIBLE_CONFIG="${ROOT}/ansible/ansible.cfg"
 

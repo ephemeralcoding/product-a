@@ -1,5 +1,5 @@
 #custom
-ansible/roles/*
+ansible/roles
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
