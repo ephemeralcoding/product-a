@@ -1,11 +1,7 @@
 - name: Configure standalone system
-  hosts: all
+  hosts: localhost
   become: true
-  pre_tasks:
-    - name: Load variables
-      ansible.builtin.include_vars:
-        file: vars/vars.yaml
-        name: vars
+  vars_files: vars/vars.yaml
 
   roles:
     - role: ansible-role-a

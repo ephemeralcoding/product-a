@@ -11,7 +11,7 @@ for role in sorted(ROLES.iterdir()):
     if not role.is_dir():
         continue
 
-    meta = role / "meta" / "main.yaml"
+    meta = role / "meta" / "artifacts.yaml"
     if not meta.exists():
         continue
 
