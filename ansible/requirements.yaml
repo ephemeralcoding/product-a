@@ -1,0 +1,8 @@
+roles:
+  - name: ansible-role-a
+    src: "git+https://github.com/ephemeralcoding/ansible-role-a.git"
+    version: "1.0.1"
+
+  - name: ansible-role-b
+    src: "git+https://github.com/ephemeralcoding/ansible-role-b.git"
+    version: "1.0.1"

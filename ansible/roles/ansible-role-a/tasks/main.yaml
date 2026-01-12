@@ -1,0 +1,5 @@
+- name: Copy gpg artifact to target
+  copy:
+    src: "{{ artifact_dir }}/noble.tar.gz.gpg"
+    dest: "/tmp/noble.tar.gz.gpg"
+    mode: "0644"
