@@ -1,1 +1,2 @@
 artifact_dir: "../../artifacts"
+custom_repo_location: "/tmp/custom-repo"

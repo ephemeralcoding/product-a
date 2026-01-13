@@ -59,7 +59,9 @@ for p in packages:
 cmd = [
     "dnf", "-y", "download",
     "--resolve",
-    "--alldeps",
+    "--enablerepo=crb",
+    "--enablerepo=appstream",
+    "--enablerepo=baseos",
     f"--destdir={str(REPO_DIR)}",
     *packages
 ]

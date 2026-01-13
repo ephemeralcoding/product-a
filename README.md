@@ -17,6 +17,11 @@
 12. Signera
 13. Disable default repos
 14. Använd ett fetch skript för dependencies alltså - parsa ansible roller för paket
+15. Fetch scriptet failar ifall den inte har repot enablat.
+16. hitta ett sätt som disablar remote repos och enablar custom repot.
+17. Paketera i en RPM och printa ut ett manifest
+18. Var ska remote repona disablas?
+19. Vart ska custom repot läggas?
 
 
 # Notes
@@ -27,3 +32,7 @@
 * Tänk på fetch av dependencies om state står som present kontra absent?
 * Tänk på ifall man ska skriva över defaults variabler ifrån roles i en global vars-fil så finns det risk för konflikt
 * Vore nice med en parser som bakar in alla default vars från roller till global vars-filen
+* Tänk på Fetch scriptet failar ifall den inte har repot enablat.
+* Tänk på custom repo url och cert på jobb
+* Tänk på ett sätt som disablar remote repos och enablar custom repot.
+* I install scriptet så hårdhackas pathen där custom repot kopieras till.

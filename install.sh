@@ -8,6 +8,8 @@ VENV="${ROOT}/.venv"
 WHEELS_DIR="${ROOT}/wheels"
 PY_REQS="${ROOT}/requirements-py.txt"
 PLAYBOOK="${ROOT}/ansible/playbook.yaml"
+RPM_REPO="${ROOT}/repo"
+TMP_REPO="/tmp/custom-repo"
 
 if [[ ! -d "${WHEELS_DIR}" ]]; then
   echo "ERROR: Missing wheels directory: ${WHEELS_DIR}"
@@ -24,8 +26,14 @@ if [[ ! -f "${PLAYBOOK}" ]]; then
   exit 1
 fi
 
-echo "==> DISABLE DEFAULT REPOS"
-dnf -y --disablerepo="*"
+if [[ ! -d "${RPM_REPO}" ]]; then
+  echo "ERROR: Missing repo directory: ${RPM_REPO}"
+  exit 1
+fi
+
+echo "==> Copying bundled RPM repo to ${TMP_REPO}"
+rm -rf "${TMP_REPO}"
+cp -a "${RPM_REPO}" "${TMP_REPO}"
 
 # Ensure we use the bundle's ansible.cfg (roles_path should point to ./vendor/roles)
 export ANSIBLE_CONFIG="${ROOT}/ansible/ansible.cfg"

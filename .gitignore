@@ -1,6 +1,7 @@
 #custom
 ansible/roles
 ansible/artifacts
+repo
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

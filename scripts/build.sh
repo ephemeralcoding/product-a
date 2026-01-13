@@ -21,6 +21,8 @@ python3 -m pip download \
   --dest "${ROOT}/wheels" \
   --requirement "${ROOT}/requirements-py.txt"
 
+
+#Kan tas bort vid pipeline
 python3 -m venv "${VENV}"
 source "${VENV}/bin/activate"
 python -m pip install --no-index --find-links "${WHEELS}" -r "${ROOT}/requirements-py.txt"
