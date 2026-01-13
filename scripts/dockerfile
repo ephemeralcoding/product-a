@@ -1,0 +1,14 @@
+FROM rockylinux:8
+
+RUN dnf -y install \
+      python3 python3-pip \
+      git rsync tar gzip \
+      dnf-plugins-core createrepo_c \
+    && dnf -y clean all
+
+RUN python3 -m pip install --no-cache-dir ansible-core==2.15.* PyYAML
+
+COPY build-entrypoint.sh /usr/local/bin/build-entrypoint.sh
+RUN chmod +x /usr/local/bin/build-entrypoint.sh
+
+ENTRYPOINT ["/usr/local/bin/build-entrypoint.sh"]

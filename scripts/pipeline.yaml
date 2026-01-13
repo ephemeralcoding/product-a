@@ -1,0 +1,41 @@
+trigger:
+- main
+
+resources:
+  repositories:
+  - repository: builder
+    type: git
+    name: YourProject/builder-repo
+    ref: refs/heads/main
+
+pool:
+  vmImage: ubuntu-latest
+
+variables:
+  OUTDIR: '$(Build.ArtifactStagingDirectory)'
+
+steps:
+- checkout: self
+  clean: true
+
+- checkout: builder
+  clean: true
+  path: builder
+
+- script: |
+    set -euo pipefail
+    docker build -t my-product-builder:ci "$(Build.SourcesDirectory)/builder"
+  displayName: Build builder image
+
+- script: |
+    set -euo pipefail
+    mkdir -p "$(OUTDIR)"
+    docker run --rm \
+      -v "$(Build.SourcesDirectory)":/src:ro \
+      -v "$(OUTDIR)":/out \
+      my-product-builder:ci
+  displayName: Build bundle in container
+
+- publish: '$(OUTDIR)/dist'
+  artifact: bundle
+  displayName: Publish bundle

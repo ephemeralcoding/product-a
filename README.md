@@ -16,12 +16,13 @@
 11. HASHSUM
 12. Signera
 13. Disable default repos
-14. Använd ett fetch skript för dependencies alltså - parsa ansible roller för paket
+14. Använd ett fetch skript för dependencies alltså - parsa ansible roller för paket (X)
 15. Fetch scriptet failar ifall den inte har repot enablat.
 16. hitta ett sätt som disablar remote repos och enablar custom repot.
 17. Paketera i en RPM och printa ut ett manifest
 18. Var ska remote repona disablas?
 19. Vart ska custom repot läggas?
+20. Lägg till stöd för att köra olika configs i ansible - dev, prod. etc.
 
 
 # Notes
@@ -36,3 +37,10 @@
 * Tänk på custom repo url och cert på jobb
 * Tänk på ett sätt som disablar remote repos och enablar custom repot.
 * I install scriptet så hårdhackas pathen där custom repot kopieras till.
+
+
+Containerize:
+1. Bygg en image med alla verktyg som krävs
+2. Hämta produkt-repo från git
+3. Hämta och kör byggskript
+4. paths måste stämma för skripten.
