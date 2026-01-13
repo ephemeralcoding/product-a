@@ -10,14 +10,20 @@
 5. Konvertera till en CI/CD pipeline
 6. Kör tester i en vagrant box
 7. Generera en SBOM
-8. fixa gitignore på roles och artifacts i produkt repot
+8. fixa gitignore på roles och artifacts i produkt repot (X)
 9. venven ska inte skickas med bundle (X)
-10. VARS NOT SET IN DEFAULT för rollerna
+10. VARS NOT SET IN DEFAULT för rollerna (X)
 11. HASHSUM
 12. Signera
 13. Disable default repos
+14. Använd ett fetch skript för dependencies alltså - parsa ansible roller för paket
 
 
 # Notes
-* tänk på metadatan
+* tänk på metadatan - default not set och en custom fil
 * Tänk på paths
+* Beskrivning för hur man skapar en ny roll
+* Fundering ifall det vore rimligare att artifakterna droppades in direkt i files foldern?
+* Tänk på fetch av dependencies om state står som present kontra absent?
+* Tänk på ifall man ska skriva över defaults variabler ifrån roles i en global vars-fil så finns det risk för konflikt
+* Vore nice med en parser som bakar in alla default vars från roller till global vars-filen
