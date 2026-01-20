@@ -1,0 +1,77 @@
+trigger:
+- main
+
+pool:
+  vmImage: ubuntu-latest
+
+container:
+  image: myregistry.azurecr.io/my-product-builder:1.0.0
+  endpoint: my-acr-service-connection
+
+variables:
+  WORK: '$(Pipeline.Workspace)/work'
+  ROLES: '$(Pipeline.Workspace)/work/roles'
+  ARTIFACTS: '$(Pipeline.Workspace)/work/artifacts'
+  RPMREPO: '$(Pipeline.Workspace)/work/repo'
+  DIST: '$(Build.ArtifactStagingDirectory)/dist'
+
+steps:
+- checkout: self
+  persistCredentials: true
+  clean: true
+
+- script: |
+    set -euo pipefail
+    echo "BUILD_SOURCESDIRECTORY=$BUILD_SOURCESDIRECTORY"
+    echo "PIPELINE_WORKSPACE=$PIPELINE_WORKSPACE"
+    echo "BUILD_ARTIFACTSTAGINGDIRECTORY=$BUILD_ARTIFACTSTAGINGDIRECTORY"
+  displayName: Show key paths
+
+- script: |
+    set -euo pipefail
+    mkdir -p "$(WORK)" "$(ROLES)" "$(ARTIFACTS)" "$(RPMREPO)" "$(DIST)"
+    rm -rf "$(WORK)/*"
+  displayName: Prepare workspace
+
+- script: |
+    set -euo pipefail
+    git config --global http.https://dev.azure.com/.extraheader "AUTHORIZATION: bearer $(System.AccessToken)"
+    git config --global http.https://*.visualstudio.com/.extraheader "AUTHORIZATION: bearer $(System.AccessToken)"
+  displayName: Configure git auth for Azure Repos
+
+- script: |
+    set -euo pipefail
+    ansible-galaxy role install \
+      -r "$(Build.SourcesDirectory)/requirements.yaml" \
+      -p "$(ROLES)" \
+      --force
+  displayName: Install Ansible roles
+
+- script: |
+    set -euo pipefail
+    python3 /opt/builder/fetch_artifacts.py \
+      --roles-dir "$(ROLES)" \
+      --out-dir "$(ARTIFACTS)"
+  displayName: Fetch role artifacts
+
+- script: |
+    set -euo pipefail
+    python3 /opt/builder/fetch_rpms.py \
+      --roles-dir "$(ROLES)" \
+      --repo-dir "$(RPMREPO)" \
+      --clean \
+      --no-weak-deps
+  displayName: Fetch RPMs and create repo
+
+- script: |
+    set -euo pipefail
+    STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
+    BUNDLE_NAME="my-product-${STAMP}"
+    tar -C "$(Pipeline.Workspace)/work" -czf "$(DIST)/${BUNDLE_NAME}.tar.gz" \
+      roles artifacts repo
+    echo "${BUNDLE_NAME}" > "$(DIST)/bundle_name.txt"
+  displayName: Create tarball
+
+- publish: $(Build.ArtifactStagingDirectory)/dist
+  artifact: bundle
+  displayName: Publish bundle artifact
