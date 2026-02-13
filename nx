@@ -1,0 +1,113 @@
+<Extension json>
+    Module xm_json
+</Extension>
+
+<Input usb_journal>
+    Module        im_systemd
+    ReadFromLast  TRUE
+    SavePos       TRUE
+
+    <Exec>
+        # Keep kernel + udev only
+        if not ( $Transport == "kernel" or $SystemdUnit == "systemd-udevd.service" ) drop();
+
+        #
+        # 1) Kernel "New USB device found" — extract IDs and (optionally) port from message
+        # If DevName exists here, we can key on DevName; otherwise fall back to port from message.
+        #
+        if $Transport == "kernel" and
+           $Message =~ /New\s+USB\s+device\s+found.*?idVendor\s*=\s*([0-9A-Fa-f]{4}).*?idProduct\s*=\s*([0-9A-Fa-f]{4})/i
+        {
+            $vendor_id  = $1;
+            $product_id = $2;
+
+            # Preferred key: DevName (if present). Fallback: parse usb port (e.g. "usb 1-2:")
+            if not defined($DevName) or $DevName == "" {
+                if $Message =~ /^usb\s+(\d+(?:-\d+)+(?:\.\d+)*):/ {
+                    $DevName = $1;
+                }
+            }
+
+            if defined($DevName) and $DevName != "" {
+                set_var("port:vid:" + $DevName, $vendor_id, 600);
+                set_var("port:pid:" + $DevName, $product_id, 600);
+            }
+
+            drop();
+        }
+
+        #
+        # 2) udev event with DevNode=/dev/bus/usb/BBB/DDD and DevName=<port>
+        # Use DevName to fetch VID/PID and bind it to DevNode for later detach correlation.
+        #
+        if defined($DevNode) and defined($DevName) and
+           $DevNode =~ /^\/dev\/bus\/usb\/\d{3}\/\d{3}$/
+        {
+            # Attach-ish udev messages vary; safest is: if we can bind IDs, treat as attach.
+            $vendor_id  = get_var("port:vid:" + $DevName);
+            $product_id = get_var("port:pid:" + $DevName);
+
+            if defined($vendor_id) and defined($product_id)
+            {
+                set_var("usbnode:vid:" + $DevNode, $vendor_id, 3600);
+                set_var("usbnode:pid:" + $DevNode, $product_id, 3600);
+
+                $event_type = "usb_device_attach";
+                $correlation_key = $DevNode;
+                $usb_port = $DevName;
+
+                to_json();
+                drop();
+            }
+
+            # If no VID/PID available yet, let it fall through (or drop to reduce noise)
+            drop();
+        }
+
+        #
+        # 3) Disconnect — no Action field, so match via $Message
+        # Common kernel pattern: "usb 1-2: USB disconnect, device number X"
+        #
+        if $Transport == "kernel" and
+           $Message =~ /^usb\s+(\d+(?:-\d+)+(?:\.\d+)*):\s+USB\s+disconnect,\s+device\s+number\s+(\d+)/i
+        {
+            $usb_port = $1;
+
+            # If your disconnect event includes DevNode you can use it; often it won't.
+            # So we try to find any DevNode mapping for this port indirectly:
+            #
+            # Best-effort approach:
+            # - If you do have DevNode in the record, use it.
+            # - Otherwise, you need an additional mapping port->DevNode, which we can store at step 2.
+            #
+            if defined($DevNode) and $DevNode =~ /^\/dev\/bus\/usb\/\d{3}\/\d{3}$/ {
+                $vendor_id  = get_var("usbnode:vid:" + $DevNode);
+                $product_id = get_var("usbnode:pid:" + $DevNode);
+
+                $event_type = "usb_device_detach";
+                $correlation_key = $DevNode;
+                $usb_port = $usb_port;
+
+                delete_var("usbnode:vid:" + $DevNode);
+                delete_var("usbnode:pid:" + $DevNode);
+
+                to_json();
+                drop();
+            }
+
+            # If DevNode is not present on disconnect, we must store port->DevNode earlier.
+            drop();
+        }
+
+        drop();
+    </Exec>
+</Input>
+
+<Output out>
+    Module om_file
+    File   "/var/log/usb-device-corr.json"
+</Output>
+
+<Route r>
+    Path usb_journal => out
+</Route>
