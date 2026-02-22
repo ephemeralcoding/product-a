@@ -1,0 +1,135 @@
+# AIDE configuration file - Libvirt Host
+# /etc/aide/aide.conf
+
+# Database locations
+database_in=file:/var/lib/aide/aide.db
+database_out=file:/var/lib/aide/aide.db.new
+database_new=file:/var/lib/aide/aide.db.new
+
+# Log output
+log_level=warning
+report_url=file:/var/log/aide/aide.log
+report_url=stdout
+
+# Checksum algorithms
+Checksums = sha256+sha512
+
+# -------------------------
+# Custom rule definitions
+# -------------------------
+
+# Strict check for binaries and critical executables
+BINARIES = p+i+n+u+g+s+sha256+sha512
+
+# Config files - permissions and content
+CONFIGS = p+i+u+g+sha256
+
+# VM disk images - size and mtime only (content changes constantly)
+VM_IMAGES = p+u+g+s+m
+
+# VM XML definitions - full content check
+VM_DEFS = p+i+u+g+sha256
+
+# Directories only
+DIRS = p+i+n+u+g
+
+# -------------------------
+# System binaries
+# -------------------------
+
+/bin            BINARIES
+/sbin           BINARIES
+/usr/bin        BINARIES
+/usr/sbin       BINARIES
+/lib            BINARIES
+/lib64          BINARIES
+/usr/lib        BINARIES
+/usr/lib64      BINARIES
+
+# -------------------------
+# Libvirt specific binaries
+# -------------------------
+
+/usr/sbin/libvirtd          BINARIES
+/usr/sbin/virtlogd          BINARIES
+/usr/sbin/virtlockd         BINARIES
+/usr/bin/virsh              BINARIES
+/usr/bin/virt-install       BINARIES
+/usr/bin/virt-clone         BINARIES
+/usr/bin/virt-xml           BINARIES
+
+# QEMU/KVM binaries
+/usr/bin/qemu-system-x86_64     BINARIES
+/usr/bin/qemu-img               BINARIES
+/usr/libexec/qemu-kvm           BINARIES
+
+# -------------------------
+# Libvirt configuration
+# -------------------------
+
+# Main libvirt config
+/etc/libvirt                    CONFIGS
+
+# VM XML definitions - these define VM hardware/config
+# any change here could mean a VM was tampered with
+/etc/libvirt/qemu               VM_DEFS
+
+# Network definitions
+/etc/libvirt/qemu/networks      VM_DEFS
+
+# Storage pool definitions
+/etc/libvirt/storage            VM_DEFS
+
+# -------------------------
+# VM disk images
+# -------------------------
+
+# Default libvirt storage pool
+# Use VM_IMAGES rule since content changes during normal VM operation
+/var/lib/libvirt/images         VM_IMAGES
+
+# -------------------------
+# System config
+# -------------------------
+
+/etc/libvirt/libvirtd.conf      CONFIGS
+/etc/libvirt/qemu.conf          CONFIGS
+/etc/libvirt/virtlogd.conf      CONFIGS
+/etc/libvirt/virtlockd.conf     CONFIGS
+
+# AppArmor/SELinux profiles for libvirt
+/etc/apparmor.d/libvirt         CONFIGS
+/etc/libvirt/nwfilter           CONFIGS
+
+# Boot and kernel - important on a hypervisor
+/boot                           BINARIES
+
+# Kernel modules (including KVM modules)
+/lib/modules                    BINARIES
+
+# -------------------------
+# Exclusions
+# -------------------------
+
+# Exclude constantly changing libvirt runtime files
+!/var/run/libvirt
+!/var/lock/libvirt
+!/var/log/libvirt
+!/var/lib/libvirt/dnsmasq
+!/var/cache/libvirt
+
+# Exclude VM volatile state files
+!/etc/libvirt/qemu/networks/autostart
+!/var/lib/libvirt/network
+
+# Standard exclusions
+!/etc/mtab
+!/etc/adjtime
+!/etc/resolv.conf
+!/proc
+!/sys
+!/dev
+!/tmp
+!/var/log
+!/var/run
+!/var/lock
