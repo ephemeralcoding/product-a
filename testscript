@@ -1,0 +1,107 @@
+#!/bin/bash
+# ============================================================
+# Audit Log Test Script - Standardised User Management
+# Commands in scope: useradd, userdel, usermod -aG, gpasswd -d, passwd
+# Must be run as root or via sudo
+# ============================================================
+
+TEST_USER="audittestuser"
+TEST_GROUP="audittestgrp"  # Deliberately different from username
+
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+CYAN='\033[0;36m'
+NC='\033[0m'
+
+log_step() {
+    echo -e "\n${CYAN}[*] $1${NC}"
+}
+
+log_ok() {
+    echo -e "${GREEN}[+] $1${NC}"
+}
+
+log_err() {
+    echo -e "${RED}[-] $1${NC}"
+}
+
+run() {
+    local desc=$1
+    local cmd=$2
+    log_step "$desc"
+    echo "    CMD: $cmd"
+    eval "$cmd"
+    if [ $? -eq 0 ]; then
+        log_ok "Success"
+    else
+        log_err "Failed"
+    fi
+    sleep 1
+}
+
+# ============================================================
+echo -e "\n=============================="
+echo -e " NXLog Audit Test Sequence"
+echo -e "=============================="
+echo -e " Test user:  $TEST_USER"
+echo -e " Test group: $TEST_GROUP"
+echo -e "==============================\n"
+
+if [ "$EUID" -ne 0 ]; then
+    log_err "Please run as root or with sudo"
+    exit 1
+fi
+
+# --- Cleanup any leftovers from a previous run ---
+log_step "Cleaning up any previous test artifacts..."
+userdel -f "$TEST_USER" 2>/dev/null
+groupdel "$TEST_GROUP" 2>/dev/null
+log_ok "Cleanup done"
+sleep 1
+
+# ============================================================
+# 1. ADD_USER - useradd
+run "ADD_USER: Creating user '$TEST_USER'" \
+    "useradd $TEST_USER"
+
+# 2. Create the test group separately (not logged, just setup)
+log_step "Setup: Creating test group '$TEST_GROUP' (not in scope, just setup)"
+groupadd "$TEST_GROUP"
+log_ok "Done"
+sleep 1
+
+# 3. USER_MGMT op=add-user-to-group - usermod -aG
+run "USER_MGMT (add-user-to-group): Adding '$TEST_USER' to '$TEST_GROUP' via usermod -aG" \
+    "usermod -aG $TEST_GROUP $TEST_USER"
+
+# 4. USER_CHAUTHTOK - passwd
+run "USER_CHAUTHTOK: Changing password for '$TEST_USER' via passwd" \
+    "echo '${TEST_USER}:TestPass123!' | chpasswd"
+
+# 5. USER_MGMT op=delete-user-from-group - gpasswd -d
+run "USER_MGMT (delete-user-from-group): Removing '$TEST_USER' from '$TEST_GROUP' via gpasswd -d" \
+    "gpasswd -d $TEST_USER $TEST_GROUP"
+
+# 6. DEL_USER - userdel
+run "DEL_USER: Deleting user '$TEST_USER'" \
+    "userdel $TEST_USER"
+
+# --- Cleanup test group ---
+log_step "Cleanup: Removing test group '$TEST_GROUP'"
+groupdel "$TEST_GROUP" 2>/dev/null
+log_ok "Done"
+
+# ============================================================
+echo -e "\n=============================="
+echo -e " Test sequence complete!"
+echo -e "=============================="
+echo -e "\nExpected NXLog output:"
+echo -e "  Actor=\$AUID created user TargetUser=$TEST_USER"
+echo -e "  Actor=\$AUID added TargetUser=$TEST_USER to Group=$TEST_GROUP"
+echo -e "  Actor=\$AUID changed password for TargetUser=$TEST_USER"
+echo -e "  Actor=\$AUID removed TargetUser=$TEST_USER from Group=$TEST_GROUP"
+echo -e "  Actor=\$AUID deleted user TargetUser=$TEST_USER"
+echo -e "\nCheck NXLog output:"
+echo -e "  tail -20 /var/log/nxlog/user_changes.log"
+echo -e "\nCompare against raw audit log:"
+echo -e "  ausearch -ts recent --raw | grep -E 'type=(USER_MGMT|ADD_USER|DEL_USER|USER_CHAUTHTOK)'\n"
