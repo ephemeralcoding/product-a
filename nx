@@ -1,113 +1,324 @@
+User root
+Group nxlog
+Panic Soft
+
+# default values:
+define INSTALLDIR /opt/nxlog
+# PidFile   %INSTALLDIR%/var/run/nxlog/nxlog.pid
+# CacheDir  %INSTALLDIR%/var/spool/nxlog
+# ModuleDir %INSTALLDIR%/lib/nxlog/modules
+# SpoolDir %INSTALLDIR%/var/spool/nxlog
+
+define CERTDIR %INSTALLDIR%/var/lib/nxlog/cert
+define CONFDIR %INSTALLDIR%/etc/nxlog.d
+
+# Note that these two lines define constants only; the log file location
+# is ultimately set by the `LogFile` directive (see below). The
+# `MYLOGFILE` define is also used to rotate the log file automatically
+# (see the `_fileop` block).
+define LOGDIR %INSTALLDIR%/var/log/nxlog
+define MYLOGFILE %LOGDIR%/nxlog.log
+
+# If you are not using NXLog Manager, disable the `include` line
+# and enable LogLevel and LogFile.
+#include %CONFDIR%/*.conf
+LogLevel    INFO
+LogFile     %MYLOGFILE%
+
+<Extension _syslog>
+    Module  xm_syslog
+</Extension>
+
 <Extension json>
     Module xm_json
 </Extension>
 
-<Input usb_journal>
+<Input usb_debug>
+    Module        im_systemd
+    ReadFromLast  TRUE
+    SavePos       TRUE
+    Exec if $Transport != "kernel" drop();
+</Input>
+
+<Extension pkg_kvp>
+    Module          xm_kvp
+    KVDelimiter     =
+    KVPDelimiter    ' '
+    ValueQuoteChar  "
+</Extension>
+
+<Extension audit_parser>
+    Module      xm_kvp
+    KVPDelimiter    ' '
+    KVDelimiter     =
+    EscapeChar      "\"
+</Extension>
+
+<Input packages>
+    Module      im_file
+    File        "/var/log/audit/audit.log"
+    SavePos     TRUE
+    ReadFromLast TRUE
+    <Exec>
+        if $raw_event =~ /^type=SOFTWARE_UPDATE/ {
+            if $raw_event =~ /auid=(\d+)/ {
+                $auid = $1;
+            } else drop();
+            if $raw_event =~ /msg='([^']+)'/ {
+                $msg = $1;
+            } else drop();
+            pkg_kvp->parse_kvp($msg);
+            if not defined($op) drop();
+            if not defined($sw) drop();
+            if $op == "install" {
+                $message = "PACKAGE_INSTALL auid=" + $auid + " sw=" + $sw;
+                $raw_event = $message;
+            } else if $op == "remove" {
+                $message = "PACKAGE_REMOVE auid=" + $auid + " sw=" + $sw;
+                $raw_event = $message;
+            } else {
+                drop();
+            }
+        } else {
+            drop();
+        }
+    </Exec>
+</Input>
+
+<Input services>
+    Module      im_systemd
+    ReadFromLast TRUE
+    SavePos      TRUE
+    <Exec>
+        if $SourceName != "sudo" drop();
+        if $Message !~ /systemctl\s+(start|stop|restart)/ drop();
+
+        if $Message =~ /COMMAND=.*systemctl\s+(start|stop|restart)\s+(\S+)/ {
+            $ServiceAction  = $1;
+            $ServiceName    = $2;
+            $UserId   = $AuditUID;
+            $raw_event =  $EventTime + $ServiceAction + $ServiceName + $UserId;
+        } else {
+            drop();
+        }
+    </Exec> 
+</Input>
+
+<Input usb_kern>
     Module        im_systemd
     ReadFromLast  TRUE
     SavePos       TRUE
 
+    Exec if $Transport != "kernel" drop();
+
     <Exec>
-        # Keep kernel + udev only
-        if not ( $Transport == "kernel" or $SystemdUnit == "systemd-udevd.service" ) drop();
+        $is_enum = FALSE;
+        $is_disconnect = FALSE;
 
-        #
-        # 1) Kernel "New USB device found" — extract IDs and (optionally) port from message
-        # If DevName exists here, we can key on DevName; otherwise fall back to port from message.
-        #
-        if $Transport == "kernel" and
-           $Message =~ /New\s+USB\s+device\s+found.*?idVendor\s*=\s*([0-9A-Fa-f]{4}).*?idProduct\s*=\s*([0-9A-Fa-f]{4})/i
+        if not defined($DevName) or $DevName == "" drop();
+
+        if $Message =~ /New\s+USB\s+device\s+found.*?idVendor\s*=\s*([0-9A-Fa-f]{4}).*?idProduct\s*=\s*([0-9A-Fa-f]{4})/i
         {
-            $vendor_id  = $1;
-            $product_id = $2;
-
-            # Preferred key: DevName (if present). Fallback: parse usb port (e.g. "usb 1-2:")
-            if not defined($DevName) or $DevName == "" {
-                if $Message =~ /^usb\s+(\d+(?:-\d+)+(?:\.\d+)*):/ {
-                    $DevName = $1;
-                }
-            }
-
-            if defined($DevName) and $DevName != "" {
-                set_var("port:vid:" + $DevName, $vendor_id, 600);
-                set_var("port:pid:" + $DevName, $product_id, 600);
-            }
-
-            drop();
+            $hwid = $1 + ":" + $2;
+            $is_enum = TRUE;
+            $Message = 'A NEW USB HAS BEEN CONNECTED ' + $hwid;
+            $raw_event = $Message;
+        }
+        if $Message =~ /USB\s+disconnect,\s+device\s+number\s+\d+/i
+        {
+            $is_disconnect = TRUE;
+            $Message = 'USB_DISCONNECT_PENDING';
+            $raw_event = $Message;
         }
 
-        #
-        # 2) udev event with DevNode=/dev/bus/usb/BBB/DDD and DevName=<port>
-        # Use DevName to fetch VID/PID and bind it to DevNode for later detach correlation.
-        #
-        if defined($DevNode) and defined($DevName) and
-           $DevNode =~ /^\/dev\/bus\/usb\/\d{3}\/\d{3}$/
-        {
-            # Attach-ish udev messages vary; safest is: if we can bind IDs, treat as attach.
-            $vendor_id  = get_var("port:vid:" + $DevName);
-            $product_id = get_var("port:pid:" + $DevName);
+        if not ($is_enum or $is_disconnect) drop();
 
-            if defined($vendor_id) and defined($product_id)
-            {
-                set_var("usbnode:vid:" + $DevNode, $vendor_id, 3600);
-                set_var("usbnode:pid:" + $DevNode, $product_id, 3600);
-
-                $event_type = "usb_device_attach";
-                $correlation_key = $DevNode;
-                $usb_port = $DevName;
-
-                to_json();
-                drop();
-            }
-
-            # If no VID/PID available yet, let it fall through (or drop to reduce noise)
-            drop();
-        }
-
-        #
-        # 3) Disconnect — no Action field, so match via $Message
-        # Common kernel pattern: "usb 1-2: USB disconnect, device number X"
-        #
-        if $Transport == "kernel" and
-           $Message =~ /^usb\s+(\d+(?:-\d+)+(?:\.\d+)*):\s+USB\s+disconnect,\s+device\s+number\s+(\d+)/i
-        {
-            $usb_port = $1;
-
-            # If your disconnect event includes DevNode you can use it; often it won't.
-            # So we try to find any DevNode mapping for this port indirectly:
-            #
-            # Best-effort approach:
-            # - If you do have DevNode in the record, use it.
-            # - Otherwise, you need an additional mapping port->DevNode, which we can store at step 2.
-            #
-            if defined($DevNode) and $DevNode =~ /^\/dev\/bus\/usb\/\d{3}\/\d{3}$/ {
-                $vendor_id  = get_var("usbnode:vid:" + $DevNode);
-                $product_id = get_var("usbnode:pid:" + $DevNode);
-
-                $event_type = "usb_device_detach";
-                $correlation_key = $DevNode;
-                $usb_port = $usb_port;
-
-                delete_var("usbnode:vid:" + $DevNode);
-                delete_var("usbnode:pid:" + $DevNode);
-
-                to_json();
-                drop();
-            }
-
-            # If DevNode is not present on disconnect, we must store port->DevNode earlier.
-            drop();
-        }
-
-        drop();
     </Exec>
 </Input>
 
-<Output out>
+<Input aide>
+    Module  im_file
+    File    "/var/log/aide/aide.log"
+
+    <Exec>
+        if $raw_event =~ /AIDE found differences between database and filesystem/
+        {
+            $EventType  = "AIDE_FIM_ALERT";
+            $Severity   = "WARNING";
+            $Message    = "AIDE detected filesystem changes on " + hostname();
+            $EventTime  = now();
+            $raw_event = $EventTime + $Severity + $Message;
+        }
+        else drop();
+    </Exec>
+</Input>
+
+<Input fim>
+    Module      im_fim
+    Recursive   FALSE
+    ScanInterval 300
+    Digest      SHA1
+    File        "/usr/bin/*"
+    File        "/usr/sbin/*"
+    File        "/usr/lib64/*"
+    File        "/usr/lib/*"
+    File        "/etc/*"
+    File        "/etc/pam.d/*"
+    File        "/etc/sudoers.d/*"
+    File        "/etc/systemd/system/*"
+    File        "/etc/cron.d/*"
+    File        "/boot/*"
+    File        "/etc/libvirt/*"
+    File        "/etc/libvirt/qemu/*"
+    File        "/etc/libvirt/storage/*"
+    File        "/etc/libvirt/networks/*"
+    File        "/var/lib/libvirt/network/*"
+    File        "/var/lib/libvirt/qemu/nvram/*"
+    Exclude     "/etc/resolv.conf"
+    Exclude     "/var/lib/libvirt/images/*"
+    Exclude     "/etc/adjtime"
+    Exclude     "/etc/*.swp"
+    Exclude     "/usr/lib64/*.cache"
+    <Exec>
+        $Hostname  = hostname_fqdn();
+        $EventType = "FIM";
+    </Exec>
+</Input>
+
+<Input time>
+    Module      im_file
+    File        "/var/log/audit/audit.log"
+    SavePos     TRUE
+    ReadFromLast TRUE
+    <Exec>
+        # Extract type from the start of the line
+        if $raw_event =~ /^type=(\S+)/ $type = $1;
+
+        # Extract auid via regex to avoid xm_kvp string/type issues
+        #if $raw_event =~ /\auid=(\d+)/ $auid = $1;
+        if $raw_event =~ /\bAUID="([^"]+)"/ $UserId = $1;
+
+        # Extract key via regex, stripping the embedded quotes
+        if $raw_event =~ /\bkey="([^"]+)"/ $key = $1;
+
+        # Extract syscall name from the interpreted uppercase SYSCALL= field
+        if $raw_event =~ /\bSYSCALL=(\S+)/ $syscall = $1;
+        if $auid == "4294967295" drop();
+        if $UserId == "unset" drop();
+        if ($auid != "0") and ($auid < 1000) drop();
+
+        # Only forward time-change syscall events
+        if defined($key) and ($key == "time-change") {
+            if $type != "SYSCALL" drop();
+            if not ($syscall == "adjtimex" or $syscall == "settimeofday" or $syscall == "clock_settime" or $syscall == "clock_adjtime") drop();
+            $raw_event = "TIME_CHANGE_DETECTED auid=" + $UserId + " syscall=" + $syscall;
+        } else {
+            drop();
+        }
+    </Exec>
+</Input>
+
+<Input user_audit>
+    Module      im_file
+    File        '/var/log/audit/audit.log'
+    SavePos     TRUE
+    ReadFromLast TRUE
+    <Exec>
+        if $raw_event !~ /^type=(USER_MGMT|ADD_USER|DEL_USER|USER_CHAUTHTOK)/ { drop(); }
+
+        if $raw_event =~ /AUID="([^"]+)"/
+            { $Actor = $1; }
+        else
+            { $Actor = "-"; }
+
+        if $raw_event =~ /acct="([^"]+)"/
+            { $TargetUser = $1; }
+        else if $raw_event =~ / ID="([^"]+)"/
+            { $TargetUser = $1; }
+        else
+            { $TargetUser = "-"; }
+
+        if $raw_event =~ /grp="([^"]+)"/
+            { $Group = $1; }
+        else
+            { $Group = "-"; }
+
+        if $raw_event =~ /op=([a-z-]+)/
+            { $Operation = $1; }
+        else
+            { $Operation = "-"; }
+
+        if $raw_event =~ /^type=ADD_USER/
+        {
+            $raw_event = "Actor=" + $Actor + " created user TargetUser=" + $TargetUser;
+        }
+        else if $raw_event =~ /^type=DEL_USER/
+        {
+            $raw_event = "Actor=" + $Actor + " deleted user TargetUser=" + $TargetUser;
+        }
+        else if $raw_event =~ /^type=USER_CHAUTHTOK/
+        {
+            $raw_event = "Actor=" + $Actor + " changed password for TargetUser=" + $TargetUser;
+        }
+        else if $raw_event =~ /^type=USER_MGMT/
+        {
+            if $Operation == "add-user-to-group"
+            {
+                $raw_event = "Actor=" + $Actor + " added TargetUser=" + $TargetUser + " to Group=" + $Group;
+            }
+            else if $Operation == "delete-user-from-group"
+            {
+                $raw_event = "Actor=" + $Actor + " removed TargetUser=" + $TargetUser + " from Group=" + $Group;
+            }
+            else { drop(); }
+        }
+    </Exec>
+</Input>
+
+<Processor corr>
+    Module pm_evcorr
+    <Pair>
+        Context            $DevName
+        TriggerCondition   $is_enum == TRUE
+        RequiredCondition  $is_disconnect == TRUE
+        Interval           3600
+        <Exec>
+            $hwid = get_prev_event_data("hwid");
+            $Message = 'A USB HAS BEEN DISCONNECTED ' + $hwid;
+            $raw_event = $Message;
+        </Exec>
+    </Pair>
+</Processor>
+
+<Output out_debug>
     Module om_file
-    File   "/var/log/usb-device-corr.json"
+    File   "/opt/nxlog/var/log/debug.json"
+    <Exec>
+        #to_json();
+    </Exec>
 </Output>
 
-<Route r>
-    Path usb_journal => out
+<Output out>
+    Module om_file
+    File   "/opt/nxlog/var/log/usb-disconnect-enriched.json"
+    <Exec>
+        to_json();
+    </Exec>
+</Output>
+
+<Output out2>
+    Module om_file
+    File   "/opt/nxlog/var/log/package_remove.json"
+</Output>
+
+#<Route r>
+#    Path usb_kern => corr => out
+#</Route>
+
+<Route r2>
+    Path services => out_debug
+</Route>
+
+<Route r3>
+    Path aide, services, packages, user_audit, time, usb_kern => corr => out2
 </Route>
