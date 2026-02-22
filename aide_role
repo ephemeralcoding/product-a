@@ -1,0 +1,45 @@
+# roles/aide/tasks/main.yml
+---
+- name: Install AIDE
+  package:
+    name: aide
+    state: present
+
+- name: Ensure AIDE directories exist
+  file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: '0700'
+  loop:
+    - /var/lib/aide
+    - /var/log/aide
+
+- name: Deploy AIDE configuration
+  template:
+    src: aide.conf.j2
+    dest: /etc/aide/aide.conf
+    owner: root
+    group: root
+    mode: '0600'
+  notify: Initialize AIDE database
+
+- name: Check if AIDE database already exists
+  stat:
+    path: /var/lib/aide/aide.db
+  register: aide_db
+
+- name: Initialize AIDE database if not present
+  command: aide --init
+  when: not aide_db.stat.exists
+  notify: Move AIDE database
+
+- name: Set up AIDE cron job
+  cron:
+    name: "AIDE integrity check"
+    hour: "3"
+    minute: "0"
+    job: "/usr/bin/aide --check >> /var/log/aide/aide.log 2>&1"
+    user: root
+    state: present
