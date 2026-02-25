@@ -54,6 +54,59 @@ LogFile     %MYLOGFILE%
     EscapeChar      "\"
 </Extension>
 
+<Extension fw_parse>
+    Module          xm_kvp
+    KVPDelimiter    ' '
+    KVDelimiter     '='
+</Extension>
+
+<Extension select_kvp>
+    Module          xm_kvp
+    KVPDelimiter    ';'
+    KVDelimiter     '='
+</Extension>
+
+<Input user_select>
+    Module          im_file
+    File            "/var/log/secure"
+    SavePos         TRUE
+    ReadFromLast    TRUE
+    <Exec>
+        if $raw_event !~ /COMMAND=/ drop();
+
+        if $raw_event =~ /sudo\[\d+\]:\s+(\S+)\s+:(.*)/
+        {
+            $sudo_user = $1;
+            $kvp_part  = $2;
+            select_kvp->parse_kvp($kvp_part);
+        }
+        $message = "User " + $sudo_user + " has elevated its privilages to " + $USER;
+        $raw_event = $message;
+    </Exec>
+</Input>
+
+<Input firewalld>
+    Module  im_file
+    File    "/var/log/messages"
+    <Exec>
+        if $raw_event !~ /(DROP|REJECT)/ drop();
+
+        parse_syslog();
+
+        if $Message =~ /^([A-Z_]*(DROP|REJECT)[A-Z_]*): (.+)/
+        {
+            $fw_prefix = $1;
+            $Message   = $3;
+        }
+
+        # Parse the remaining key=value pairs
+        fw_parse->parse_kvp($Message);
+        $raw_event = $fw_prefix + $IN + $SRC + $DST + $PROTO;
+
+        $fw_action = "DENY";
+    </Exec>
+</Input>
+
 <Input packages>
     Module      im_file
     File        "/var/log/audit/audit.log"
@@ -108,31 +161,43 @@ LogFile     %MYLOGFILE%
     Module        im_systemd
     ReadFromLast  TRUE
     SavePos       TRUE
-
     Exec if $Transport != "kernel" drop();
-
     <Exec>
-        $is_enum = FALSE;
+        $is_enum       = FALSE;
         $is_disconnect = FALSE;
+        $is_storage    = FALSE;
 
         if not defined($DevName) or $DevName == "" drop();
 
+        if $DevName =~ /(\d+-\d+)/
+        {
+            $usb_port = $1;
+        }
+        else drop();
+
         if $Message =~ /New\s+USB\s+device\s+found.*?idVendor\s*=\s*([0-9A-Fa-f]{4}).*?idProduct\s*=\s*([0-9A-Fa-f]{4})/i
         {
-            $hwid = $1 + ":" + $2;
-            $is_enum = TRUE;
-            $Message = 'A NEW USB HAS BEEN CONNECTED ' + $hwid;
+            $hwid      = $1 + ":" + $2;
+            $is_enum   = TRUE;
+            $Message   = 'USB DEVICE CONNECTED ' + $hwid;
             $raw_event = $Message;
         }
+
+        if $Message =~ /USB\s+Mass\s+Storage\s+device\s+detected/i
+        {
+            $is_storage = TRUE;
+            $Message    = 'USB_STORAGE_PENDING';
+            $raw_event  = $Message;
+        }
+
         if $Message =~ /USB\s+disconnect,\s+device\s+number\s+\d+/i
         {
             $is_disconnect = TRUE;
-            $Message = 'USB_DISCONNECT_PENDING';
-            $raw_event = $Message;
+            $Message       = 'USB_DISCONNECT_PENDING';
+            $raw_event     = $Message;
         }
 
-        if not ($is_enum or $is_disconnect) drop();
-
+        if not ($is_enum or $is_disconnect or $is_storage) drop();
     </Exec>
 </Input>
 
@@ -275,16 +340,124 @@ LogFile     %MYLOGFILE%
     </Exec>
 </Input>
 
+<Input audit_files>
+    Module       im_file
+    File         "/var/log/audit/audit.log"
+    SavePos      TRUE
+    ReadFromLast TRUE
+    <Exec>
+        # Drop non-SYSCALL/PATH record types immediately
+        if $raw_event !~ /type=(SYSCALL|PATH)/ drop();
+
+        # For SYSCALL records specifically, enforce the key filter
+        # PATH records don't carry the key so we can't filter them here
+        if $raw_event =~ /type=SYSCALL/ and $raw_event !~ /key="identity"/ drop();
+
+        $is_syscall = FALSE;
+        $is_path    = FALSE;
+
+        if $raw_event =~ /type=SYSCALL/
+        {
+            if $raw_event =~ /SYSCALL=(openat|open)/
+            {
+                if $raw_event =~ /\ba2=([0-9a-fA-F]+)/
+                {
+                    if (integer("0x" + $1) % integer("0x400")) < integer("0x200") drop();
+                }
+            }
+
+            if $raw_event =~ /msg=audit\([\d.]+:(\d+)\)/  $AuditSerial = $1;
+
+            # Prefer the translated AUID="sysop" over numeric auid=1000
+            if $raw_event =~ /AUID="([^"]+)"/             $AuditUser   = $1;
+            if not defined($AuditUser) or $AuditUser == ""
+            {
+                if $raw_event =~ /\bauid=(\d+)/            $AuditUser   = $1;
+            }
+
+            if $raw_event =~ /comm="([^"]+)"/             $AuditComm   = $1;
+            if $raw_event =~ /key="([^"]+)"/              $AuditKey    = $1;
+            if $raw_event =~ /SYSCALL=(\w+)/              $SyscallName = $1;
+
+            $is_syscall = TRUE;
+        }
+        else if $raw_event =~ /type=PATH/
+        {
+            if $raw_event =~ /nametype=PARENT/ drop();
+
+            if $raw_event =~ /msg=audit\([\d.]+:(\d+)\)/  $AuditSerial = $1;
+            if $raw_event =~ /name="([^"]+)"/             $FilePath    = $1;
+            if $raw_event =~ /nametype=(\w+)/             $NameType    = $1;
+
+            $is_path = TRUE;
+        }
+
+        else drop();
+    </Exec>
+</Input>
+
 <Processor corr>
     Module pm_evcorr
+    # Pair 1: connect -> storage = "USB MASS STORAGE DEVICE CONNECTED"
     <Pair>
-        Context            $DevName
-        TriggerCondition   $is_enum == TRUE
-        RequiredCondition  $is_disconnect == TRUE
-        Interval           3600
+        Context           $usb_port
+        TriggerCondition  $is_enum == TRUE
+        RequiredCondition $is_storage == TRUE
+        Interval          30
         <Exec>
-            $hwid = get_prev_event_data("hwid");
-            $Message = 'A USB HAS BEEN DISCONNECTED ' + $hwid;
+            $hwid       = get_prev_event_data("hwid");
+            $event_type = "usb_storage_connect_enriched";
+            $Message    = 'USB MASS STORAGE DEVICE CONNECTED ' + $hwid;
+            $raw_event  = $Message;
+        </Exec>
+    </Pair>
+
+    # Pair 2: connect -> disconnect = "USB DEVICE DISCONNECTED"
+    <Pair>
+        Context           $usb_port
+        TriggerCondition  $is_enum == TRUE
+        RequiredCondition $is_disconnect == TRUE
+        Interval          3600
+        <Exec>
+            $hwid       = get_prev_event_data("hwid");
+            $event_type = "usb_disconnect_enriched";
+            $Message    = 'USB DEVICE DISCONNECTED ' + $hwid;
+            $raw_event  = $Message;
+        </Exec>
+    </Pair>
+
+    # Pair 3: storage -> disconnect = "USB MASS STORAGE DEVICE DISCONNECTED"
+    <Pair>
+        Context           $usb_port
+        TriggerCondition  $is_storage == TRUE
+        RequiredCondition $is_disconnect == TRUE
+        Interval          3600
+        <Exec>
+            $event_type = "usb_storage_disconnect_enriched";
+            $Message    = 'USB MASS STORAGE DEVICE DISCONNECTED';
+            $raw_event  = $Message;
+        </Exec>
+    </Pair>
+    <Pair>
+        Context            $AuditSerial
+        TriggerCondition   $is_syscall == TRUE
+        RequiredCondition  $is_path == TRUE
+        Interval           5
+        <Exec>
+            # Pull fields from the SYSCALL (trigger) event
+            $AuditUser   = get_prev_event_data("AuditUser");
+            $AuditComm   = get_prev_event_data("AuditComm");
+            $AuditKey    = get_prev_event_data("AuditKey");
+            $SyscallName = get_prev_event_data("SyscallName");
+
+            # FilePath and NameType already available from the PATH (required) event
+            $Message = "File " + $NameType + ": " + $FilePath + \
+                       " | user=" + $AuditUser + \
+                       " | comm=" + $AuditComm + \
+                       " | syscall=" + $SyscallName + \
+                       " | key=" + $AuditKey;
+            $is_path    = FALSE;
+            $is_syscall = FALSE;
             $raw_event = $Message;
         </Exec>
     </Pair>
@@ -309,6 +482,7 @@ LogFile     %MYLOGFILE%
 <Output out2>
     Module om_file
     File   "/opt/nxlog/var/log/package_remove.json"
+    Exec   if $is_syscall == TRUE or $is_path == TRUE drop();
 </Output>
 
 #<Route r>
@@ -316,9 +490,9 @@ LogFile     %MYLOGFILE%
 #</Route>
 
 <Route r2>
-    Path services => out_debug
+    Path usb_kern => out_debug
 </Route>
 
 <Route r3>
-    Path aide, services, packages, user_audit, time, usb_kern => corr => out2
+    Path audit_files, user_select, firewalld, aide, services, packages, user_audit, time, usb_kern => corr => out2
 </Route>
