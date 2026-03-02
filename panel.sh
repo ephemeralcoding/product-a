@@ -15,9 +15,7 @@ ALLOWED_GROUPS=(developers docker sudo_limited backup monitoring)
 
 DEFAULT_SHELL="/bin/bash"
 HOME_BASE="/home"
-LOG_TAG="admin_panel"
 
-INVOKED_BY="${SUDO_USER:-${USER}}"
 
 # ── Colours ───────────────────────────────────────────────────────────────────
 
@@ -26,10 +24,9 @@ CYAN='\033[0;36m'; BOLD='\033[1m'; DIM='\033[2m'; RESET='\033[0m'
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
-log()  { logger -t "$LOG_TAG" "[${INVOKED_BY}] $*"; }
-info() { echo -e "${GREEN}[✔]${RESET} $*"; }
-warn() { echo -e "${YELLOW}[!]${RESET} $*"; }
-err()  { echo -e "${RED}[✘]${RESET} $*"; }
+info() { echo -e "${GREEN}$*${RESET}"; }
+warn() { echo -e "${YELLOW}$*${RESET}"; }
+err()  { echo -e "${RED}$*${RESET}"; }
 sep()  { echo -e "${CYAN}$(printf '─%.0s' {1..72})${RESET}"; }
 
 pause() { echo; read -rp "  Press Enter to continue..."; }
@@ -176,7 +173,6 @@ do_create() {
   else
     useradd -m -d "${HOME_BASE}/${username}" -s "$DEFAULT_SHELL" "$username" || { err "useradd failed."; return; }
   fi
-  log "EXEC: useradd user=$username by=${INVOKED_BY}"
   info "User '$username' created."
 
   # --- add groups
@@ -192,7 +188,6 @@ do_create() {
     fi
   done
 
-  log "CREATE user=$username groups=$gcsv by=${INVOKED_BY}"
 
   # --- optional password
   echo
@@ -203,7 +198,6 @@ do_create() {
   local pwchoice=""
   read -r pwchoice
   if [[ "$pwchoice" == "1" ]]; then
-    log "PASSWD (interactive) user=$username by=${INVOKED_BY}"
     passwd "$username"
     info "Password set. Account is ready."
   else
@@ -247,14 +241,12 @@ do_lock_unlock() {
   if [[ "$choice" == "1" ]]; then
     if usermod -L "$username"; then
       info "Account '$username' locked."
-      log "LOCK user=$username by=${INVOKED_BY}"
     else
       err "Failed to lock account."
     fi
   elif [[ "$choice" == "2" ]]; then
     if usermod -U "$username"; then
       info "Account '$username' unlocked."
-      log "UNLOCK user=$username by=${INVOKED_BY}"
     else
       err "Failed to unlock account."
     fi
@@ -308,7 +300,6 @@ do_addgroup() {
       getent group "$g" &>/dev/null || groupadd "$g"
       if usermod -aG "$g" "$username"; then
         info "Added '$username' to group: $g"
-        log "ADDGROUP user=$username group=$g by=${INVOKED_BY}"
       else
         err "Failed to add to group: $g"
       fi
@@ -349,13 +340,11 @@ do_passwd() {
 
   if [[ "$choice" == "1" ]]; then
     info "You will be prompted to enter the password twice:"
-    log "PASSWD (interactive) user=$username by=${INVOKED_BY}"
     passwd "$username"
     info "Password updated for '$username'."
   elif [[ "$choice" == "2" ]]; then
     if passwd -e "$username"; then
       info "Password expired. '$username' must set a new one at next login."
-      log "RESETPASS user=$username by=${INVOKED_BY}"
     else
       err "Failed to expire password."
     fi
@@ -407,7 +396,6 @@ do_delete() {
 
   if userdel -r "$username" 2>/dev/null; then
     info "User '$username' deleted."
-    log "DELETE user=$username by=${INVOKED_BY}"
   else
     err "Failed to delete '$username'."
   fi
@@ -423,7 +411,7 @@ do_delete() {
 while true; do
   clear
   sep
-  echo -e "${BOLD}   User Management Panel${RESET}  ${DIM}(invoked by: ${INVOKED_BY})${RESET}"
+  echo -e "${BOLD}   User Management Panel${RESET}"
   sep
   echo "   1)  List users"
   echo "   2)  Create user"
