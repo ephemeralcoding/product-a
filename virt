@@ -1,0 +1,38 @@
+<Extension _kvp>
+    Module          xm_kvp
+    KVDelimiter     =
+    Delimiter       WHITESPACE
+    QuoteChar       "
+</Extension>
+
+<Extension _json>
+    Module          xm_json
+</Extension>
+
+<Input in_audit>
+    Module          im_file
+    File            /var/log/audit/audit.log
+    ReadFromLast    TRUE
+    SavePos         TRUE
+
+    <Exec>
+        if $raw_event !~ /type=VIRT_CONTROL/ drop();
+
+        ## Grab the audit timestamp from the envelope
+        if $raw_event =~ /msg=audit\((\d+\.\d+):(\d+)\)/
+        {
+            $EventTime      = parsedate($1);
+            $audit_event_id = integer($2);
+        }
+
+        ## Extract and parse the inner msg payload only
+        if $raw_event =~ /msg='([^']+)'/
+        {
+            $raw_event = $1;
+            parse_kvp();
+        }
+
+        $SourceName = "libvirt-audit";
+        to_json();
+    </Exec>
+</Input>
