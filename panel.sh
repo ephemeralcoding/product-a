@@ -323,7 +323,76 @@ do_addgroup() {
   done
 }
 
-# ── 5. Password ───────────────────────────────────────────────────────────────
+# ── 5. Remove from group ──────────────────────────────────────────────────────
+
+do_removegroup() {
+  echo
+  sep
+  echo -e "${BOLD}  Remove User from Group(s)${RESET}"
+  sep
+
+  local username=""
+  while true; do
+    echo -n "  Username: "
+    read -r username
+    if [[ -z "$username" ]]; then
+      warn "Username cannot be empty."
+    elif ! [[ "$username" =~ $ALLOWED_USERNAME_RE ]]; then
+      warn "Invalid username."
+    elif ! id "$username" &>/dev/null; then
+      warn "User '$username' does not exist."
+    else
+      break
+    fi
+  done
+
+  # Build list of groups the user is currently in that are also in ALLOWED_GROUPS
+  local removable=()
+  for g in "${ALLOWED_GROUPS[@]}"; do
+    if id -Gn "$username" 2>/dev/null | tr ' ' '
+' | grep -qx "$g"; then
+      removable+=("$g")
+    fi
+  done
+
+  if [[ ${#removable[@]} -eq 0 ]]; then
+    warn "User '$username' is not a member of any managed groups."
+    return
+  fi
+
+  echo
+  echo "  Current managed groups for '$username':"
+  local i=1
+  for g in "${removable[@]}"; do
+    echo "    $i) $g"
+    (( i++ ))
+  done
+  echo "  Enter group numbers to remove, separated by spaces:"
+  echo -n "  Selection: "
+  local group_input=""
+  read -r group_input
+
+  if [[ -z "$group_input" ]]; then
+    warn "No groups selected. Cancelled."
+    return
+  fi
+
+  local g token
+  for token in $group_input; do
+    if [[ "$token" =~ ^[0-9]+$ ]] && (( token >= 1 && token <= ${#removable[@]} )); then
+      g="${removable[$((token-1))]}"
+      if gpasswd -d "$username" "$g" &>/dev/null; then
+        info "Removed '$username' from group: $g"
+      else
+        err "Failed to remove '$username' from group: $g"
+      fi
+    else
+      warn "Ignoring invalid selection: $token"
+    fi
+  done
+}
+
+# ── 6. Password ───────────────────────────────────────────────────────────────
 
 do_passwd() {
   echo
@@ -369,7 +438,7 @@ do_passwd() {
   fi
 }
 
-# ── 6. Delete user ────────────────────────────────────────────────────────────
+# ── 7. Delete user ────────────────────────────────────────────────────────────
 
 do_delete() {
   echo
@@ -419,7 +488,7 @@ do_delete() {
   fi
 }
 
-# ── 7. Transfer files ─────────────────────────────────────────────────────────
+# ── 8. Transfer files ─────────────────────────────────────────────────────────
 
 do_transfer() {
   echo
@@ -497,9 +566,10 @@ while true; do
   echo "   2)  Create user"
   echo "   3)  Lock / Unlock account"
   echo "   4)  Add user to group(s)"
-  echo "   5)  Set / Reset password"
-  echo "   6)  Delete user"
-  echo "   7)  Transfer files to user"
+  echo "   5)  Remove user from group(s)"
+  echo "   6)  Set / Reset password"
+  echo "   7)  Delete user"
+  echo "   8)  Transfer files to user"
   sep
   echo "   0)  Exit"
   sep
@@ -512,9 +582,10 @@ while true; do
     2) do_create;      pause ;;
     3) do_lock_unlock; pause ;;
     4) do_addgroup;    pause ;;
-    5) do_passwd;      pause ;;
-    6) do_delete;      pause ;;
-    7) do_transfer;     pause ;;
+    5) do_removegroup; pause ;;
+    6) do_passwd;      pause ;;
+    7) do_delete;      pause ;;
+    8) do_transfer;    pause ;;
     0) echo; echo "  Bye."; echo; exit 0 ;;
     *) warn "Invalid option. Enter a number from the menu."; sleep 1 ;;
   esac
