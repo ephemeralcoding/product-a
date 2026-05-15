@@ -1,0 +1,106 @@
+trigger:
+  branches:
+    include: [main]
+  tags:
+    include: ["[0-9]*"]
+
+pr:
+  branches:
+    include: [main]
+
+pool:
+  name: 
+
+variables:
+  - group: artifactory-creds
+  - name: ansibleVersion
+    value: "2.18.*"
+
+stages:
+  - stage: Lint
+    jobs:
+      - job: lint
+        steps:
+          - script: |
+              python3 -m venv .venv
+              .venv/bin/pip install --quiet \
+                ansible-core==$(ansibleVersion) \
+                ansible-lint \
+                yamllint
+              echo "##vso[task.prependpath]$(System.DefaultWorkingDirectory)/.venv/bin"
+            displayName: Set up ansible venv
+
+          - script: yamllint .
+            displayName: yamllint
+
+          - script: ansible-lint --format=pep8
+            displayName: ansible-lint
+
+          - script: |
+              GALAXY_VERSION=$(grep '^version:' galaxy.yml | awk '{print $2}')
+              if [[ "$BUILD_SOURCEBRANCH" == refs/tags/* ]]; then
+                TAG_VERSION="$BUILD_SOURCEBRANCHNAME"
+                if [ "$GALAXY_VERSION" != "$TAG_VERSION" ]; then
+                  echo "Version mismatch: galaxy.yml=$GALAXY_VERSION, tag=$TAG_VERSION"
+                  exit 1
+                fi
+              fi
+            displayName: Verify version alignment
+
+  - stage: Build
+    dependsOn: Lint
+    condition: |
+      and(
+        succeeded(),
+        ne(variables['Build.Reason'], 'PullRequest')
+      )
+    jobs:
+      - job: build
+        steps:
+          - script: |
+              python3 -m venv .venv
+              .venv/bin/pip install --quiet ansible-core==$(ansibleVersion)
+              echo "##vso[task.prependpath]$(System.DefaultWorkingDirectory)/.venv/bin"
+            displayName: Set up ansible venv
+
+          - script: |
+              ansible-galaxy collection build --output-path $(Build.ArtifactStagingDirectory)
+            displayName: Build collection tarball
+
+          - publish: $(Build.ArtifactStagingDirectory)
+            artifact: collection
+            displayName: Publish pipeline artifact
+
+  - stage: Publish
+    dependsOn: Build
+    condition: |
+      and(
+        succeeded(),
+        startsWith(variables['Build.SourceBranch'], 'refs/tags/')
+      )
+    jobs:
+      - job: publish
+        steps:
+          - script: |
+              python3 -m venv .venv
+              .venv/bin/pip install --quiet ansible-core==$(ansibleVersion)
+              echo "##vso[task.prependpath]$(System.DefaultWorkingDirectory)/.venv/bin"
+            displayName: Set up ansible venv
+
+          - download: current
+            artifact: collection
+
+          - script: |
+              cat > ansible.cfg <<'EOF'
+              [galaxy]
+              server_list = 
+
+              [galaxy_server.mycompany_artifactory]
+              url = $(ArtifactoryUrl)/artifactory/api/ansible/ansible-collections/
+              token = ${ARTIFACTORY_TOKEN}
+              EOF
+
+              ansible-galaxy collection publish $(Pipeline.Workspace)/collection/mycompany-*.tar.gz --server mycompany_artifactory
+            env:
+              ARTIFACTORY_TOKEN: $(ArtifactoryToken)
+            displayName: Publish to Artifactory
