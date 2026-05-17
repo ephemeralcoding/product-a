@@ -1,51 +1,32 @@
+parameters:
+  - name: version
+    type: string
+    displayName: "Version to release (e.g. 0.2.0)"
+
 trigger:
   branches:
     include: [main]
-  tags:
-    include: ["[0-9]*"]
 
 pr:
   branches:
     include: [main]
 
 pool:
-  name: 
+  name: <self-hosted>
 
 variables:
   - group: artifactory-creds
   - name: ansibleVersion
-    value: "2.18.*"
+    value: "2.18.2"
 
 stages:
   - stage: Lint
     jobs:
       - job: lint
         steps:
-          - script: |
-              python3 -m venv .venv
-              .venv/bin/pip install --quiet \
-                ansible-core==$(ansibleVersion) \
-                ansible-lint \
-                yamllint
-              echo "##vso[task.prependpath]$(System.DefaultWorkingDirectory)/.venv/bin"
-            displayName: Set up ansible venv
-
-          - script: yamllint .
-            displayName: yamllint
-
+          - template: templates/setup-ansible.yml
           - script: ansible-lint --format=pep8
             displayName: ansible-lint
-
-          - script: |
-              GALAXY_VERSION=$(grep '^version:' galaxy.yml | awk '{print $2}')
-              if [[ "$BUILD_SOURCEBRANCH" == refs/tags/* ]]; then
-                TAG_VERSION="$BUILD_SOURCEBRANCHNAME"
-                if [ "$GALAXY_VERSION" != "$TAG_VERSION" ]; then
-                  echo "Version mismatch: galaxy.yml=$GALAXY_VERSION, tag=$TAG_VERSION"
-                  exit 1
-                fi
-              fi
-            displayName: Verify version alignment
 
   - stage: Build
     dependsOn: Lint
@@ -57,50 +38,79 @@ stages:
     jobs:
       - job: build
         steps:
-          - script: |
-              python3 -m venv .venv
-              .venv/bin/pip install --quiet ansible-core==$(ansibleVersion)
-              echo "##vso[task.prependpath]$(System.DefaultWorkingDirectory)/.venv/bin"
-            displayName: Set up ansible venv
+          - template: templates/setup-ansible.yml
+          - script: ansible-galaxy collection build --output-path $(Build.ArtifactStagingDirectory)
+            displayName: Build collection
+          - task: PublishBuildArtifacts@1
+            inputs:
+              pathToPublish: $(Build.ArtifactStagingDirectory)
+              artifactName: collection
+              publishLocation: Container
 
-          - script: |
-              ansible-galaxy collection build --output-path $(Build.ArtifactStagingDirectory)
-            displayName: Build collection tarball
-
-          - publish: $(Build.ArtifactStagingDirectory)
-            artifact: collection
-            displayName: Publish pipeline artifact
-
-  - stage: Publish
+  - stage: Release
     dependsOn: Build
     condition: |
       and(
         succeeded(),
-        startsWith(variables['Build.SourceBranch'], 'refs/tags/')
+        eq(variables['Build.Reason'], 'Manual'),
+        ne('${{ parameters.version }}', '')
       )
     jobs:
-      - job: publish
+      - job: release
         steps:
-          - script: |
-              python3 -m venv .venv
-              .venv/bin/pip install --quiet ansible-core==$(ansibleVersion)
-              echo "##vso[task.prependpath]$(System.DefaultWorkingDirectory)/.venv/bin"
-            displayName: Set up ansible venv
+          - checkout: self
+            persistCredentials: true
 
-          - download: current
-            artifact: collection
+          - template: templates/setup-ansible.yml
+
+          - script: |
+              set -e
+              VERSION="${{ parameters.version }}"
+
+              # Validate version format
+              if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+                echo "ERROR: version must be semver (e.g. 0.2.0), got: $VERSION"
+                exit 1
+              fi
+
+              # Check the tag doesn't already exist
+              if git rev-parse "$VERSION" >/dev/null 2>&1; then
+                echo "ERROR: tag $VERSION already exists"
+                exit 1
+              fi
+
+              # Bump galaxy.yml
+              sed -i "s/^version:.*/version: $VERSION/" galaxy.yml
+
+              # Configure git identity for the bot commit
+              git config user.email "ci@mycompany.local"
+              git config user.name "Release Bot"
+
+              # Commit, tag, push
+              git add galaxy.yml
+              git commit -m "Release $VERSION"
+              git tag "$VERSION"
+              git push origin HEAD:main
+              git push origin "$VERSION"
+            displayName: Bump, commit, tag, push
+
+          - script: |
+              ansible-galaxy collection build --output-path $(Build.ArtifactStagingDirectory)
+            displayName: Rebuild with new version
 
           - script: |
               cat > ansible.cfg <<'EOF'
               [galaxy]
-              server_list = 
+              server_list = mycompany_artifactory
 
               [galaxy_server.mycompany_artifactory]
               url = $(ArtifactoryUrl)/artifactory/api/ansible/ansible-collections/
               token = ${ARTIFACTORY_TOKEN}
               EOF
 
-              ansible-galaxy collection publish $(Pipeline.Workspace)/collection/mycompany-*.tar.gz --server mycompany_artifactory
+              ansible-galaxy collection publish \
+                $(Build.ArtifactStagingDirectory)/mycompany-*.tar.gz \
+                --server mycompany_artifactory
             env:
               ARTIFACTORY_TOKEN: $(ArtifactoryToken)
             displayName: Publish to Artifactory
