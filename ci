@@ -1,18 +1,13 @@
-parameters:
-  - name: version
-    type: string
-    displayName: "Version to release (e.g. 0.2.0)"
-
-trigger:
-  branches:
-    include: [main]
-
-pr:
-  branches:
-    include: [main]
+trigger: none
+pr: none
 
 pool:
   name: <self-hosted>
+
+parameters:
+  - name: version
+    type: string
+    displayName: "Bundle version (e.g. 1.0.0)"
 
 variables:
   - group: artifactory-creds
@@ -20,97 +15,94 @@ variables:
     value: "2.18.2"
 
 stages:
-  - stage: Lint
+  - stage: Bundle
     jobs:
-      - job: lint
-        steps:
-          - template: templates/setup-ansible.yml
-          - script: ansible-lint --format=pep8
-            displayName: ansible-lint
-
-  - stage: Build
-    dependsOn: Lint
-    condition: |
-      and(
-        succeeded(),
-        ne(variables['Build.Reason'], 'PullRequest')
-      )
-    jobs:
-      - job: build
-        steps:
-          - template: templates/setup-ansible.yml
-          - script: ansible-galaxy collection build --output-path $(Build.ArtifactStagingDirectory)
-            displayName: Build collection
-          - task: PublishBuildArtifacts@1
-            inputs:
-              pathToPublish: $(Build.ArtifactStagingDirectory)
-              artifactName: collection
-              publishLocation: Container
-
-  - stage: Release
-    dependsOn: Build
-    condition: |
-      and(
-        succeeded(),
-        eq(variables['Build.Reason'], 'Manual'),
-        ne('${{ parameters.version }}', '')
-      )
-    jobs:
-      - job: release
+      - job: bundle
         steps:
           - checkout: self
             persistCredentials: true
+            clean: true
 
           - template: templates/setup-ansible.yml
+            parameters:
+              ansibleVersion: $(ansibleVersion)
 
           - script: |
               set -e
               VERSION="${{ parameters.version }}"
-
-              # Validate version format
-              if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-                echo "ERROR: version must be semver (e.g. 0.2.0), got: $VERSION"
-                exit 1
-              fi
-
-              # Check the tag doesn't already exist
-              if git rev-parse "$VERSION" >/dev/null 2>&1; then
-                echo "ERROR: tag $VERSION already exists"
-                exit 1
-              fi
-
-              # Bump galaxy.yml
-              sed -i "s/^version:.*/version: $VERSION/" galaxy.yml
-
-              # Configure git identity for the bot commit
-              git config user.email "ci@mycompany.local"
-              git config user.name "Release Bot"
-
-              # Commit, tag, push
-              git add galaxy.yml
-              git commit -m "Release $VERSION"
-              git tag "$VERSION"
-              git push origin HEAD:main
-              git push origin "$VERSION"
-            displayName: Bump, commit, tag, push
+              [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
+                echo "ERROR: version must be semver, got: $VERSION"; exit 1; }
+            displayName: Validate version
 
           - script: |
-              ansible-galaxy collection build --output-path $(Build.ArtifactStagingDirectory)
-            displayName: Rebuild with new version
-
-          - script: |
-              cat > ansible.cfg <<'EOF'
-              [galaxy]
-              server_list = mycompany_artifactory
-
-              [galaxy_server.mycompany_artifactory]
-              url = $(ArtifactoryUrl)/artifactory/api/ansible/ansible-collections/
-              token = ${ARTIFACTORY_TOKEN}
-              EOF
-
-              ansible-galaxy collection publish \
-                $(Build.ArtifactStagingDirectory)/mycompany-*.tar.gz \
-                --server mycompany_artifactory
+              set -e
+              ansible-galaxy collection install \
+                -r requirements.yml \
+                -p ./collections \
+                --force
             env:
               ARTIFACTORY_TOKEN: $(ArtifactoryToken)
-            displayName: Publish to Artifactory
+            displayName: Install collections from Artifactory
+
+          - script: |
+              set -e
+              echo "Installed collections:"
+              ansible-galaxy collection list -p ./collections
+              # Fail if expected collections didn't land
+              for c in \
+                ansible_collections/mycompany/hypervisor_common \
+                ansible_collections/mycompany/hypervisor_controller \
+                ansible_collections/mycompany/hypervisor_compute; do
+                test -f "collections/$c/MANIFEST.json" || {
+                  echo "ERROR: missing $c"; exit 1; }
+              done
+            displayName: Verify collection install
+
+          - script: |
+              set -e
+              ansible-playbook playbooks/site.yml --syntax-check
+            displayName: Syntax check playbooks
+
+          - script: |
+              set -e
+              VERSION="${{ parameters.version }}"
+              BUNDLE="acme-hq-c1-${VERSION}.tar.gz"
+
+              # Write a manifest describing what's in the bundle
+              cat > BUNDLE_MANIFEST.yml <<EOF
+              deployment: acme-hq-c1
+              version: $VERSION
+              built: $(date -u +%Y-%m-%dT%H:%M:%SZ)
+              built_by: $(Build.RequestedFor)
+              pipeline_run: $(Build.BuildNumber)
+              ansible_core: $(ansibleVersion)
+              git_commit: $(Build.SourceVersion)
+              EOF
+
+              tar czf "$BUNDLE" \
+                --transform "s,^,acme-hq-c1-${VERSION}/," \
+                playbooks/ \
+                roles/ \
+                group_vars/ \
+                collections/ \
+                ansible.cfg \
+                BUNDLE_MANIFEST.yml
+
+              echo "##vso[task.setvariable variable=BundleFile]${BUNDLE}"
+              ls -lh "$BUNDLE"
+            displayName: Create bundle
+
+          - script: |
+              set -e
+              VERSION="${{ parameters.version }}"
+              BUNDLE="$(BundleFile)"
+              TARGET_URL="$(ArtifactoryUrl)/artifactory/ansible-bundles-local/acme-hq-c1/${VERSION}/${BUNDLE}"
+
+              curl -sf -H "Authorization: Bearer ${ARTIFACTORY_TOKEN}" \
+                -T "$BUNDLE" \
+                "$TARGET_URL"
+
+              echo "Bundle published: $TARGET_URL"
+            env:
+              ARTIFACTORY_TOKEN: $(ArtifactoryToken)
+            displayName: Publish bundle to Artifactory
