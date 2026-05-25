@@ -2,27 +2,33 @@
 
 ISO_CACHE := iso-cache
 
-# Download an ISO + its checksum from Artifactory if missing.
-# Pattern rule matches any *.iso under iso-cache/.
-$(ISO_CACHE)/%.iso:
-	@mkdir -p $(ISO_CACHE)
-	@echo ">>> Downloading $* from Artifactory"
-	@curl -fsS \
-	  -H "Authorization: Bearer $$ARTIFACTORY_TOKEN" \
-	  -o $@ \
-	  "$$ARTIFACTORY_URL/artifactory/iso/$*.iso"
-	@curl -fsS \
-	  -H "Authorization: Bearer $$ARTIFACTORY_TOKEN" \
-	  -o $@.sha256 \
-	  "$$ARTIFACTORY_URL/artifactory/iso/$*.iso.sha256"
-	@echo ">>> Cached at $@"
-
-# Get the base_os value for a build from its build.mk, then ensure ISO exists.
 ensure-iso: check-env
 	@test -n "$(BUILD_ID)" || (echo "ERROR: BUILD_ID required" && exit 1)
-	@$(eval include generated/builds/$(BUILD_ID)/build.mk)
-	@$(MAKE) --no-print-directory $(ISO_CACHE)/$(BASE_OS).iso
+	$(eval BASE_OS := $($(BUILD_ID)_BASE_OS))
+	@test -n "$(BASE_OS)" || (echo "ERROR: unknown BUILD_ID '$(BUILD_ID)'" && exit 1)
+	@mkdir -p $(ISO_CACHE)
+	@if [ ! -f $(ISO_CACHE)/$(BASE_OS).iso ]; then \
+	  echo ">>> Downloading $(BASE_OS).iso"; \
+	  curl -fsS \
+	    -H "Authorization: Bearer $$ARTIFACTORY_TOKEN" \
+	    -o $(ISO_CACHE)/$(BASE_OS).iso \
+	    "$(ARTIFACTORY_URL)$(ISO_PATH)$(BASE_OS).iso"; \
+	  curl -fsS \
+	    -H "Authorization: Bearer $$ARTIFACTORY_TOKEN" \
+	    -o $(ISO_CACHE)/$(BASE_OS).iso.sha256 \
+	    "$(ARTIFACTORY_URL)$(ISO_PATH)$(BASE_OS).iso.sha256"; \
+	else \
+	  echo ">>> ISO cached: $(ISO_CACHE)/$(BASE_OS).iso"; \
+	fi
 
-# build-one now depends on the ISO being available
-build-one: check-env ensure-iso
-	... existing logic ...
+# --- Build ------------------------------------------------------------------
+
+build-one: ensure-iso
+	$(eval BASE_OS := $($(BUILD_ID)_BASE_OS))
+	$(eval HOST    := $($(BUILD_ID)_HOST))
+	@echo ">>> Building $(BUILD_ID)"
+	cd packer && $(PACKER) init . && \
+	  $(PACKER) build \
+	    -var-file=../output/builds/$(BUILD_ID)/$(HOST).pkrvars.hcl \
+	    .
+	@echo ">>> Done: $(BUILD_ID)"
