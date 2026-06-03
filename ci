@@ -1,108 +1,113 @@
-trigger: none
+# pipelines/build.yml
+#
+# Manual-trigger pipeline for building hypervisor qcows.
+# Mirrors the local workflow: same orchestrator commands, same secrets,
+# same output. Only difference is where secrets come from.
+
+trigger: none      # no auto-triggers; manual runs only
 pr: none
 
 pool:
-  name: <self-hosted>
+  name: <your-self-hosted-pool-name>   # self-hosted agent with packer + qemu + kvm
 
 parameters:
-  - name: version
+  - name: mode
+    displayName: "Action"
     type: string
-    displayName: "Bundle version (e.g. 1.0.0)"
+    default: discover
+    values:
+      - discover    # generate + list available builds (no Packer)
+      - one         # build a single image (requires buildId)
+      - all         # build every image in the manifest, sequentially
+
+  - name: buildId
+    displayName: "Build ID (only used when mode=one)"
+    type: string
+    default: ""
 
 variables:
-  - group: artifactory-creds
-  - name: ansibleVersion
-    value: "2.18.2"
+  - group: artifactory-creds       # ArtifactoryToken, WinRMPassword
+  - name: pythonVersion
+    value: "3.12"
 
-stages:
-  - stage: Bundle
-    jobs:
-      - job: bundle
-        steps:
-          - checkout: self
-            persistCredentials: true
-            clean: true
+jobs:
+  - job: build
+    displayName: "${{ parameters.mode }}"
+    timeoutInMinutes: 120
 
-          - template: templates/setup-ansible.yml
-            parameters:
-              ansibleVersion: $(ansibleVersion)
+    steps:
+      # -----------------------------------------------------------------
+      # Setup
+      # -----------------------------------------------------------------
+      - checkout: self
+        displayName: "Checkout SoT"
 
-          - script: |
-              set -e
-              VERSION="${{ parameters.version }}"
-              [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
-                echo "ERROR: version must be semver, got: $VERSION"; exit 1; }
-            displayName: Validate version
+      - script: |
+          set -e
+          echo "=== Python version ==="
+          python3 --version
+          echo "=== Creating venv ==="
+          python3 -m venv .venv
+          .venv/bin/pip install --quiet --upgrade pip
+          .venv/bin/pip install --quiet -r generator/requirements.txt
+          echo "=== venv ready ==="
+        displayName: "Set up Python venv"
 
-          - script: |
-              set -e
-              ansible-galaxy collection install \
-                -r requirements.yml \
-                -p ./collections \
-                --force
-            env:
-              ARTIFACTORY_TOKEN: $(ArtifactoryToken)
-            displayName: Install collections from Artifactory
+      # -----------------------------------------------------------------
+      # Validate mode=one has a buildId before doing anything expensive
+      # -----------------------------------------------------------------
+      - ${{ if eq(parameters.mode, 'one') }}:
+        - script: |
+            if [ -z "${{ parameters.buildId }}" ]; then
+              echo "ERROR: buildId is required when mode=one"
+              echo "Run with mode=discover to see available build IDs."
+              exit 1
+            fi
+          displayName: "Validate buildId"
 
-          - script: |
-              set -e
-              echo "Installed collections:"
-              ansible-galaxy collection list -p ./collections
-              # Fail if expected collections didn't land
-              for c in \
-                ansible_collections/mycompany/hypervisor_common \
-                ansible_collections/mycompany/hypervisor_controller \
-                ansible_collections/mycompany/hypervisor_compute; do
-                test -f "collections/$c/MANIFEST.json" || {
-                  echo "ERROR: missing $c"; exit 1; }
-              done
-            displayName: Verify collection install
+      # -----------------------------------------------------------------
+      # Always generate first - manifest is ephemeral
+      # -----------------------------------------------------------------
+      - script: .venv/bin/python orchestrator/run.py generate
+        displayName: "Generate (SoT -> output/)"
+        env:
+          # Generator doesn't need secrets, but the validate_environment
+          # call up front does. Pass them here too so behavior is uniform.
+          ARTIFACTORY_TOKEN: $(ArtifactoryToken)
+          ANSIBLE_GALAXY_SERVER_MYCOMPANY_ARTIFACTORY_TOKEN: $(ArtifactoryToken)
+          PACKER_WINRM_PASSWORD: $(WinRMPassword)
 
-          - script: |
-              set -e
-              ansible-playbook playbooks/site.yml --syntax-check
-            displayName: Syntax check playbooks
+      # -----------------------------------------------------------------
+      # Mode: discover -- list builds and stop
+      # -----------------------------------------------------------------
+      - ${{ if eq(parameters.mode, 'discover') }}:
+        - script: .venv/bin/python orchestrator/run.py list
+          displayName: "List available builds"
+          env:
+            ARTIFACTORY_TOKEN: $(ArtifactoryToken)
+            ANSIBLE_GALAXY_SERVER_MYCOMPANY_ARTIFACTORY_TOKEN: $(ArtifactoryToken)
+            PACKER_WINRM_PASSWORD: $(WinRMPassword)
 
-          - script: |
-              set -e
-              VERSION="${{ parameters.version }}"
-              BUNDLE="acme-hq-c1-${VERSION}.tar.gz"
+      # -----------------------------------------------------------------
+      # Mode: one -- single build
+      # -----------------------------------------------------------------
+      - ${{ if eq(parameters.mode, 'one') }}:
+        - script: |
+            .venv/bin/python orchestrator/run.py build-one \
+              --build-id "${{ parameters.buildId }}"
+          displayName: "Build one: ${{ parameters.buildId }}"
+          env:
+            ARTIFACTORY_TOKEN: $(ArtifactoryToken)
+            ANSIBLE_GALAXY_SERVER_MYCOMPANY_ARTIFACTORY_TOKEN: $(ArtifactoryToken)
+            PACKER_WINRM_PASSWORD: $(WinRMPassword)
 
-              # Write a manifest describing what's in the bundle
-              cat > BUNDLE_MANIFEST.yml <<EOF
-              deployment: acme-hq-c1
-              version: $VERSION
-              built: $(date -u +%Y-%m-%dT%H:%M:%SZ)
-              built_by: $(Build.RequestedFor)
-              pipeline_run: $(Build.BuildNumber)
-              ansible_core: $(ansibleVersion)
-              git_commit: $(Build.SourceVersion)
-              EOF
-
-              tar czf "$BUNDLE" \
-                --transform "s,^,acme-hq-c1-${VERSION}/," \
-                playbooks/ \
-                roles/ \
-                group_vars/ \
-                collections/ \
-                ansible.cfg \
-                BUNDLE_MANIFEST.yml
-
-              echo "##vso[task.setvariable variable=BundleFile]${BUNDLE}"
-              ls -lh "$BUNDLE"
-            displayName: Create bundle
-
-          - script: |
-              set -e
-              VERSION="${{ parameters.version }}"
-              BUNDLE="$(BundleFile)"
-              TARGET_URL="$(ArtifactoryUrl)/artifactory/ansible-bundles-local/acme-hq-c1/${VERSION}/${BUNDLE}"
-
-              curl -sf -H "Authorization: Bearer ${ARTIFACTORY_TOKEN}" \
-                -T "$BUNDLE" \
-                "$TARGET_URL"
-
-              echo "Bundle published: $TARGET_URL"
-            env:
-              ARTIFACTORY_TOKEN: $(ArtifactoryToken)
-            displayName: Publish bundle to Artifactory
+      # -----------------------------------------------------------------
+      # Mode: all -- iterate every build sequentially
+      # -----------------------------------------------------------------
+      - ${{ if eq(parameters.mode, 'all') }}:
+        - script: .venv/bin/python orchestrator/run.py build-all
+          displayName: "Build all (sequential)"
+          env:
+            ARTIFACTORY_TOKEN: $(ArtifactoryToken)
+            ANSIBLE_GALAXY_SERVER_MYCOMPANY_ARTIFACTORY_TOKEN: $(ArtifactoryToken)
+            PACKER_WINRM_PASSWORD: $(WinRMPassword)
