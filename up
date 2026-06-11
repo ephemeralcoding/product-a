@@ -43,3 +43,39 @@ def upload_qcow(build: dict[str, Any], infra: dict[str, Any]) -> None:
         fail(f"Upload failed (curl exit {result.returncode})")
 
     info("Upload complete.")
+
+
+
+
+def cmd_upload_one(args) -> None:
+    validate_environment()
+    infra = load_yaml(INFRA)
+    manifest = load_manifest()
+    build = find_build(args.build_id, manifest)
+    upload_qcow(build, infra)
+
+
+def cmd_upload_all(args) -> None:
+    validate_environment()
+    infra = load_yaml(INFRA)
+    manifest = load_manifest()
+    step(f"Uploading all ({len(manifest)} builds)")
+    for build in manifest:
+        upload_qcow(build, infra)
+    step("All uploads complete")
+
+
+def cmd_build_and_upload_one(args) -> None:
+    cmd_build_one(args)
+    cmd_upload_one(args)
+
+
+def cmd_build_and_upload_all(args) -> None:
+    validate_environment()
+    infra = load_yaml(INFRA)
+    manifest = load_manifest()
+    for build in manifest:
+        ensure_iso(build["base_os"], infra)
+        run_packer(build)
+        upload_qcow(build, infra)
+
