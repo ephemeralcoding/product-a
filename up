@@ -1,0 +1,45 @@
+def qcow_local_path(build: dict[str, Any]) -> Path:
+    """Local path where Packer produces the qcow."""
+    return (
+        PACKER_DIR / "output" / build["id"] / build["build_version"]
+        / f"{build['id']}.qcow2"
+    )
+
+
+def qcow_remote_url(build: dict[str, Any], infra: dict[str, Any]) -> str:
+    """Artifactory destination for the qcow."""
+    return (
+        f"{infra['artifactory']['url']}/artifactory/qcows-builds/"
+        f"{build['location']}/{build['host']}/{build['build_version']}/"
+        f"{build['host']}.qcow2"
+    )
+
+
+def upload_qcow(build: dict[str, Any], infra: dict[str, Any]) -> None:
+    step(f"Upload: {build['id']}")
+    local = qcow_local_path(build)
+    if not local.exists():
+        fail(
+            f"Local qcow not found: {local.relative_to(REPO_ROOT)}\n"
+            f"  Build it first: build-one --build-id {build['id']}"
+        )
+
+    url = qcow_remote_url(build, infra)
+    info(f"Source: {local.relative_to(REPO_ROOT)}")
+    info(f"  Size: {local.stat().st_size / (1024**3):.2f} GB")
+    info(f"Target: {url}")
+
+    token = require_env("ARTIFACTORY_TOKEN")
+    args = [
+        "curl", "-fsS",
+        "-H", f"Authorization: Bearer {token}",
+        "-T", str(local),
+        url,
+    ]
+    printable = [a if "Bearer " not in a else "Authorization: Bearer ***" for a in args]
+    cmd(printable)
+    result = subprocess.run(args, check=False)
+    if result.returncode != 0:
+        fail(f"Upload failed (curl exit {result.returncode})")
+
+    info("Upload complete.")
