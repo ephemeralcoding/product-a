@@ -79,3 +79,20 @@ def cmd_build_and_upload_all(args) -> None:
         run_packer(build)
         upload_qcow(build, infra)
 
+
+
+p_upload_one = sub.add_parser("upload-one", help="Upload one already-built qcow")
+p_upload_one.add_argument("--build-id", required=True)
+p_upload_one.set_defaults(func=cmd_upload_one)
+
+p_upload_all = sub.add_parser("upload-all", help="Upload every already-built qcow")
+p_upload_all.set_defaults(func=cmd_upload_all)
+
+p_bau_one = sub.add_parser("build-and-upload-one", help="Build, then upload, one image")
+p_bau_one.add_argument("--build-id", required=True)
+p_bau_one.set_defaults(func=cmd_build_and_upload_one)
+
+p_bau_all = sub.add_parser("build-and-upload-all", help="Build and upload every image")
+p_bau_all.set_defaults(func=cmd_build_and_upload_all)
+
+
