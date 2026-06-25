@@ -1,0 +1,36 @@
+class _TestinfraAdapter:
+    """Normalize a testinfra host to our (.stdout, .exit_status) contract."""
+
+    def __init__(self, backend):
+        self._b = backend
+
+    def run(self, cmd):
+        res = self._b.run(cmd)
+        rc = getattr(res, "rc", getattr(res, "exit_status", 0))
+        return CommandResult(res.stdout, rc)
+
+
+def pytest_addoption(parser):
+    parser.addoption(
+        "--target",
+        action="store",
+        default=None,
+        help="testinfra connection string, e.g. ssh://user@host or local://",
+    )
+
+
+@pytest.fixture
+def host(request):
+    # Resolution order: --target flag, then COMPLIANCE_TARGET env var,
+    # then the canned FakeHost so the demo still runs with no box.
+    target = request.config.getoption("--target") or os.environ.get(
+        "COMPLIANCE_TARGET"
+    )
+    if not target:
+        return FakeHost()
+
+    import testinfra  # lazy: only needed when a real target is given
+
+    # sudo=True because compliance checks like `sshd -T` require root.
+    backend = testinfra.get_host(target, sudo=True)
+    return _TestinfraAdapter(backend)
